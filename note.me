@@ -1,0 +1,136 @@
+Chào bạn, đây là Lộ trình Triển khai Dự án Hoàn chỉnh (Final Project Roadmap) được tối ưu hóa dựa trên tư duy "Architecture First", tích hợp yêu cầu so sánh mô hình MLlib để đạt điểm tuyệt đối, và bám sát kiến thức trong bộ tài liệu bạn đã học.
+
+🗺️ LỘ TRÌNH DỰ ÁN: HỆ THỐNG PHÂN TÍCH LIVESTREAM REALTIME
+Giai đoạn 1: Xây dựng Hạ tầng & Thu thập Dữ liệu (Infrastructure & Ingestion)
+Mục tiêu: Đảm bảo hệ thống chịu tải cao và dòng dữ liệu chảy ổn định.
+
+Công việc 1.1: Thiết lập Cluster (Hadoop & Spark)
+
+Cấu hình HDFS để lưu trữ phân tán, đảm bảo khả năng chịu lỗi (Fault Tolerance) thông qua cơ chế nhân bản.
+
+
+
+Cấu hình YARN để quản lý tài nguyên tính toán cho Spark.
+
+
+Công việc 1.2: Hệ thống Message Queue (Kafka)
+
+Cài đặt Apache Kafka đóng vai trò vùng đệm (buffer) cho luồng dữ liệu bình luận, tách biệt quá trình thu thập và xử lý.
+
+
+
+Công việc 1.3: Giả lập Dữ liệu (Data Simulation)
+
+Viết script Python (Producer) đọc từ tập dữ liệu mẫu (CSV/JSON), giả lập tốc độ comment thực tế và đẩy vào Kafka Topic. Đây là đầu vào cho DStream.
+
+
+
+🚩 Kết quả (Deliverable):
+
+Cụm Server (Docker) hoạt động: HDFS, YARN, Spark, Kafka.
+
+Luồng dữ liệu (Data Stream) được đẩy liên tục vào Kafka.
+
+Giai đoạn 2: Xử lý Luồng & Làm sạch (Stream Processing & ETL)
+Mục tiêu: Biến dữ liệu thô thành dữ liệu sạch để phân tích.
+
+Công việc 2.1: Khởi tạo Spark Streaming
+
+Khởi tạo StreamingContext với chu kỳ (Batch Interval) phù hợp (ví dụ: 2 giây) để cắt luồng dữ liệu thành các vi lô (micro-batches).
+
+Kết nối Spark Streaming với Kafka để tạo Input DStream.
+
+
+Công việc 2.2: Tiền xử lý (Preprocessing)
+
+Áp dụng các Transformations như flatMap để tách câu thành từ, filter để loại bỏ rác/từ dừng (stop words).
+
+
+Sử dụng map để chuyển đổi cấu trúc dữ liệu về dạng key-value chuẩn bị cho tính toán.
+
+🚩 Kết quả (Deliverable):
+
+Pipeline xử lý luồng chạy ổn định, đọc được dữ liệu từ Kafka.
+
+Dữ liệu sau khi làm sạch sẵn sàng cho bước phân tích.
+
+Giai đoạn 3: Phân tích Nâng cao & Machine Learning (Advanced Analytics)
+Mục tiêu: Trả lời các câu hỏi nghiệp vụ và so sánh mô hình AI (Điểm Advance).
+
+Công việc 3.1: So sánh Mô hình Phân loại (Model Comparison) - Yêu cầu đặc biệt
+
+Chuẩn bị: Sử dụng một tập dữ liệu gán nhãn sẵn (Labeled Data) về bình luận tích cực/tiêu cực.
+
+Huấn luyện: Dùng Spark MLlib để huấn luyện 2 mô hình phân loại:
+
+
+Logistic Regression: Mô hình cơ bản, dễ giải thích.
+
+
+
+Naive Bayes: Mô hình xác suất, thường hiệu quả với văn bản.
+
+Đánh giá: So sánh độ chính xác (Accuracy) của 2 mô hình trên tập kiểm thử (Test Set).
+
+Lựa chọn: Chọn mô hình có hiệu năng tốt hơn để lưu lại và sử dụng cho luồng Realtime.
+
+Công việc 3.2: Ứng dụng AI vào Luồng (Real-time Prediction)
+
+Load mô hình đã chọn vào Spark Streaming.
+
+Dự đoán cảm xúc (Sentiment) cho từng bình luận ngay khi nó xuất hiện trong DStream.
+
+Công việc 3.3: Phân tích Cửa sổ (Window Operations)
+
+Sử dụng reduceByKeyAndWindow để tính toán xu hướng trong 30-60 giây gần nhất (Ví dụ: Đang có bao nhiêu comment tiêu cực trong 1 phút qua?).
+
+🚩 Kết quả (Deliverable):
+
+Báo cáo so sánh hiệu quả giữa Logistic Regression và Naive Bayes.
+
+Hệ thống tự động gán nhãn cảm xúc cho luồng comment thời gian thực.
+
+Giai đoạn 4: Lưu trữ & Trực quan hóa (Storage & Dashboard)
+Mục tiêu: Hiển thị kết quả cho người dùng cuối.
+
+Công việc 4.1: Cơ chế Chịu lỗi (Fault Tolerance)
+
+Cấu hình Checkpointing xuống HDFS để lưu trạng thái ứng dụng, đảm bảo hệ thống tự phục hồi nếu gặp sự cố.
+
+
+Công việc 4.2: Lưu trữ Kết quả (Output Operations)
+
+Ghi các chỉ số đã tính toán (Top Comment, Sentiment Score) xuống cơ sở dữ liệu (NoSQL/SQL) hoặc file system để Dashboard đọc.
+
+Công việc 4.3: Xây dựng Dashboard
+
+Dùng Python (Streamlit/Matplotlib) để vẽ biểu đồ Realtime:
+
+Đồng hồ cảm xúc (Sentiment Gauge).
+
+Biểu đồ Top Comment & Top Từ khóa (Bar Chart).
+
+🚩 Kết quả (Deliverable):
+
+Hệ thống hoạt động bền bỉ, không mất dữ liệu khi lỗi.
+
+Dashboard trực quan, cập nhật số liệu theo thời gian thực.
+
+📊 TỔNG KẾT KẾT QUẢ DỰ ÁN (FINAL OUTCOME)
+Sau khi hoàn thành lộ trình trên, bạn sẽ có một hệ thống Big Data hoàn chỉnh đáp ứng mọi tiêu chí:
+
+Kiến trúc Chuẩn: Sử dụng Hadoop (HDFS/YARN) và Spark đúng như môn học yêu cầu.
+
+Công nghệ Nâng cao: Tích hợp Kafka và Spark Streaming cho xử lý thời gian thực (Realtime).
+
+Trí tuệ nhân tạo (AI): Có phần so sánh Logistic Regression vs Naive Bayes và ứng dụng mô hình tốt nhất vào thực tế.
+
+Sản phẩm Đầu ra: Dashboard hiển thị rõ ràng:
+
+Trạng thái cảm xúc: Tích cực hay Tiêu cực?
+
+Top Comments: Khán giả đang spam câu gì?
+
+Vấn đề: Các comment tiêu cực nổi bật.
+
+Mối quan tâm: Các từ khóa (Keywords) hot nhất.
