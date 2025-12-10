@@ -1,0 +1,1243 @@
+# 🚀 HƯỚNG DẪN TRIỂN KHAI CHI TIẾT: HỆ THỐNG PHÂN TÍCH LIVESTREAM REALTIME
+
+## 📋 MỤC LỤC
+1. [Kiến trúc Hệ thống](#kiến-trúc-hệ-thống)
+2. [Giai đoạn 1: Infrastructure & Ingestion](#giai-đoạn-1-infrastructure--ingestion)
+3. [Giai đoạn 2: Stream Processing & Cleaning](#giai-đoạn-2-stream-processing--cleaning)
+4. [Giai đoạn 3: AI Integration & Window Operations](#giai-đoạn-3-ai-integration--window-operations)
+5. [Giai đoạn 4: Fault Tolerance & Storage](#giai-đoạn-4-fault-tolerance--storage)
+6. [Dashboard Visualization](#dashboard-visualization)
+7. [Testing & Validation](#testing--validation)
+
+---
+
+## 🏗️ KIẾN TRÚC HỆ THỐNG
+
+### Tổng quan 4 tầng:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Tầng 1: Data Source                                       │
+│  └─ Kafka (Buffer cho comment stream)                      │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  Tầng 2: Processing                                        │
+│  └─ Spark Streaming (DStream, micro-batches 1-2s)         │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  Tầng 3: Analytics (AI)                                    │
+│  └─ Spark MLlib (Logistic Regression / Naive Bayes)       │
+└─────────────────────────────────────────────────────────────┘
+                          ↓
+┌─────────────────────────────────────────────────────────────┐
+│  Tầng 4: Storage/Serving                                   │
+│  └─ HDFS (Checkpointing) + MongoDB/MySQL (Results)        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Công nghệ sử dụng:
+- **Hadoop Ecosystem**: HDFS, YARN
+- **Spark**: Spark Streaming, Spark MLlib, Spark SQL
+- **Kafka**: Message Queue
+- **Docker**: Containerization
+- **Python**: Producer script, Dashboard
+- **MongoDB/MySQL**: Storage kết quả
+
+---
+
+## 📦 GIAI ĐOẠN 1: INFRASTRUCTURE & INGESTION
+
+### Mục tiêu:
+- Dựng cụm Hadoop/Spark cluster
+- Cài đặt Kafka
+- Viết Producer script giả lập comment livestream
+
+### Bước 1.1: Thiết lập Docker Compose
+
+Tạo file `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+
+services:
+  # Zookeeper (Required for Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  # Kafka
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  # HDFS NameNode
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    environment:
+      - CLUSTER_NAME=test
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+
+  # HDFS DataNode
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    depends_on:
+      - namenode
+    environment:
+      SERVICE_PRECONDITION: namenode:9870
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+    ports:
+      - "9864:9864"
+
+  # Spark Master
+  spark-master:
+    image: bde2020/spark-master:3.0.0-hadoop3.2
+    container_name: spark-master
+    environment:
+      - INIT_DAEMON_STEP=setup_spark
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+
+  # Spark Worker
+  spark-worker:
+    image: bde2020/spark-worker:3.0.0-hadoop3.2
+    container_name: spark-worker
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+    ports:
+      - "8081:8081"
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+```
+
+### Bước 1.2: Khởi động Docker Compose
+
+```bash
+# Di chuyển vào thư mục chứa docker-compose.yml
+cd D:\Big_data
+
+# Khởi động tất cả services
+docker-compose up -d
+
+# Kiểm tra trạng thái
+docker-compose ps
+
+# Xem logs nếu có lỗi
+docker-compose logs kafka
+docker-compose logs spark-master
+```
+
+### Bước 1.3: Kiểm tra các services
+
+```bash
+# Kiểm tra Kafka
+docker exec -it big_data_kafka_1 kafka-topics --list --bootstrap-server localhost:9092
+
+# Kiểm tra HDFS NameNode
+# Mở browser: http://localhost:9870
+
+# Kiểm tra Spark Master
+# Mở browser: http://localhost:8080
+```
+
+### Bước 1.4: Tạo Kafka Topic
+
+```bash
+# Tạo topic cho livestream comments
+docker exec -it big_data_kafka_1 kafka-topics --create \
+  --topic livestream-comments \
+  --bootstrap-server localhost:9092 \
+  --partitions 3 \
+  --replication-factor 1
+
+# Kiểm tra topic đã tạo
+docker exec -it big_data_kafka_1 kafka-topics --list --bootstrap-server localhost:9092
+```
+
+### Bước 1.5: Viết Producer Script (Python)
+
+Tạo file `producer.py`:
+
+```python
+import json
+import time
+import random
+from kafka import KafkaProducer
+from datetime import datetime
+
+# Danh sách comment mẫu (giả lập livestream)
+COMMENTS_POOL = [
+    "Chốt đơn", "Giá bao nhiêu", "Ship không", "Có freeship không",
+    "Sản phẩm đẹp quá", "Màu gì có sẵn", "Size nào có", "Chất lượng tốt không",
+    "Lag quá", "Không nghe tiếng", "Màn hình mờ", "Đặt hàng như thế nào",
+    "Tuyệt vời", "Rất thích", "Mua ngay", "Review chi tiết đi",
+    "Lừa đảo", "Hàng giả", "Không đúng mô tả", "Trả hàng được không"
+]
+
+# Topics hot
+TOPICS = ["iPhone16", "VinFast", "ChatGPT", "Samsung", "Xiaomi"]
+
+def generate_comment():
+    """Tạo comment ngẫu nhiên"""
+    comment = random.choice(COMMENTS_POOL)
+    topic = random.choice(TOPICS)
+    timestamp = datetime.now().isoformat()
+    
+    return {
+        "comment_id": f"cmt_{int(time.time() * 1000)}",
+        "content": comment,
+        "topic": topic,
+        "timestamp": timestamp,
+        "user_id": f"user_{random.randint(1, 1000)}"
+    }
+
+def main():
+    # Kết nối Kafka Producer
+    producer = KafkaProducer(
+        bootstrap_servers=['localhost:9092'],
+        value_serializer=lambda v: json.dumps(v).encode('utf-8')
+    )
+    
+    print("🚀 Bắt đầu gửi comment vào Kafka...")
+    print("Topic: livestream-comments")
+    print("Nhấn Ctrl+C để dừng\n")
+    
+    try:
+        while True:
+            # Tạo comment ngẫu nhiên
+            comment_data = generate_comment()
+            
+            # Gửi vào Kafka
+            producer.send('livestream-comments', value=comment_data)
+            
+            print(f"[{comment_data['timestamp']}] Topic: {comment_data['topic']} | Comment: {comment_data['content']}")
+            
+            # Giả lập tốc độ comment (1-3 giây/comment)
+            time.sleep(random.uniform(1, 3))
+            
+    except KeyboardInterrupt:
+        print("\n\n⏹️  Dừng Producer...")
+        producer.close()
+
+if __name__ == "__main__":
+    main()
+```
+
+### Bước 1.6: Cài đặt dependencies cho Producer
+
+Tạo file `requirements.txt`:
+
+```txt
+kafka-python==2.0.2
+```
+
+Cài đặt:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Bước 1.7: Chạy Producer
+
+```bash
+python producer.py
+```
+
+### ✅ Deliverable Giai đoạn 1:
+- ✅ Docker cluster hoạt động: Kafka, Spark, HDFS
+- ✅ Kafka topic `livestream-comments` đã tạo
+- ✅ Producer script gửi comment liên tục vào Kafka
+- ✅ Có thể kiểm tra bằng Kafka Consumer:
+
+```bash
+docker exec -it big_data_kafka_1 kafka-console-consumer \
+  --topic livestream-comments \
+  --from-beginning \
+  --bootstrap-server localhost:9092
+```
+
+---
+
+## 🔄 GIAI ĐOẠN 2: STREAM PROCESSING & CLEANING
+
+### Mục tiêu:
+- Khởi tạo Spark Streaming
+- Kết nối với Kafka
+- Tiền xử lý dữ liệu (Preprocessing)
+
+### Bước 2.1: Cài đặt PySpark và dependencies
+
+Tạo file `requirements-spark.txt`:
+
+```txt
+pyspark==3.3.0
+kafka-python==2.0.2
+findspark==2.0.1
+```
+
+Cài đặt:
+
+```bash
+pip install -r requirements-spark.txt
+```
+
+**Lưu ý**: Cần download Spark Kafka connector JAR:
+- Tải file: `spark-sql-kafka-0-10_2.12-3.3.0.jar`
+- Đặt vào thư mục `jars/` hoặc chỉ định khi chạy Spark
+
+### Bước 2.2: Viết Spark Streaming Code
+
+Tạo file `spark_streaming.py`:
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+import json
+
+# Khởi tạo Spark Session
+spark = SparkSession.builder \
+    .appName("LivestreamCommentAnalysis") \
+    .master("spark://localhost:7077") \
+    .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0") \
+    .getOrCreate()
+
+# Tắt logging không cần thiết
+spark.sparkContext.setLogLevel("WARN")
+
+# Định nghĩa schema cho comment
+comment_schema = StructType([
+    StructField("comment_id", StringType(), True),
+    StructField("content", StringType(), True),
+    StructField("topic", StringType(), True),
+    StructField("timestamp", StringType(), True),
+    StructField("user_id", StringType(), True)
+])
+
+# Đọc stream từ Kafka
+kafka_stream = spark \
+    .readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "livestream-comments") \
+    .option("startingOffsets", "latest") \
+    .load()
+
+# Parse JSON từ Kafka value
+parsed_stream = kafka_stream.select(
+    from_json(col("value").cast("string"), comment_schema).alias("data"),
+    col("timestamp").alias("kafka_timestamp")
+).select("data.*", "kafka_timestamp")
+
+# Tiền xử lý (Preprocessing)
+def preprocess_comments(df, epoch_id):
+    """
+    Transformations:
+    - flatMap: Tách câu thành từ
+    - filter: Loại bỏ comment rác/quá ngắn
+    - map: Chuẩn hóa dữ liệu
+    """
+    # Loại bỏ comment null hoặc rỗng
+    cleaned_df = df.filter(
+        (col("content").isNotNull()) & 
+        (length(col("content")) > 2)
+    )
+    
+    # Tách từ (Word Tokenization)
+    words_df = cleaned_df.select(
+        col("comment_id"),
+        col("content"),
+        col("topic"),
+        col("timestamp"),
+        explode(split(col("content"), " ")).alias("word")
+    )
+    
+    # Loại bỏ từ dừng (stop words) và ký tự đặc biệt
+    stop_words = ["không", "có", "gì", "nào", "được", "và", "của", "cho"]
+    filtered_words = words_df.filter(
+        ~col("word").isin(stop_words) &
+        (length(col("word")) > 1) &
+        (col("word").rlike("^[a-zA-ZÀ-ỹ0-9]+$"))
+    )
+    
+    # Hiển thị kết quả
+    print(f"\n=== Batch {epoch_id} ===")
+    print(f"Số lượng comment: {cleaned_df.count()}")
+    print(f"Số lượng từ sau khi làm sạch: {filtered_words.count()}")
+    
+    # Lưu vào console để kiểm tra
+    cleaned_df.select("comment_id", "content", "topic", "timestamp") \
+        .show(10, truncate=False)
+
+# Áp dụng preprocessing
+query = parsed_stream.writeStream \
+    .foreachBatch(preprocess_comments) \
+    .outputMode("update") \
+    .start()
+
+# Chờ stream chạy
+query.awaitTermination()
+```
+
+### Bước 2.3: Chạy Spark Streaming
+
+```bash
+# Đảm bảo Producer đang chạy ở terminal khác
+# Terminal 1: python producer.py
+
+# Terminal 2: Chạy Spark Streaming
+python spark_streaming.py
+```
+
+### Bước 2.4: Kiểm tra kết quả
+
+- Xem logs trong console để thấy số lượng comment và từ đã xử lý
+- Kiểm tra Spark UI: http://localhost:8080
+
+### ✅ Deliverable Giai đoạn 2:
+- ✅ Spark Streaming đọc được dữ liệu từ Kafka
+- ✅ Dữ liệu đã được làm sạch (loại bỏ spam, stop words)
+- ✅ Pipeline xử lý chạy ổn định với micro-batches
+
+---
+
+## 🤖 GIAI ĐOẠN 3: AI INTEGRATION & WINDOW OPERATIONS
+
+### Mục tiêu:
+- Train và so sánh 2 mô hình MLlib (Logistic Regression vs Naive Bayes)
+- Áp dụng sentiment analysis vào stream
+- Window Operations để tính xu hướng
+
+### Bước 3.1: Chuẩn bị Dataset cho Training
+
+Tạo file `prepare_training_data.py`:
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.ml.feature import Tokenizer, StopWordsRemover, CountVectorizer, IDF
+from pyspark.ml import Pipeline
+import json
+
+spark = SparkSession.builder \
+    .appName("PrepareTrainingData") \
+    .master("local[*]") \
+    .getOrCreate()
+
+# Tạo dataset mẫu với label (1: positive, 0: negative)
+training_data = [
+    ("Chốt đơn", 1),
+    ("Sản phẩm đẹp quá", 1),
+    ("Tuyệt vời", 1),
+    ("Rất thích", 1),
+    ("Mua ngay", 1),
+    ("Chất lượng tốt", 1),
+    ("Lag quá", 0),
+    ("Không nghe tiếng", 0),
+    ("Lừa đảo", 0),
+    ("Hàng giả", 0),
+    ("Không đúng mô tả", 0),
+    ("Trả hàng", 0),
+    ("Giá bao nhiêu", 1),
+    ("Ship không", 1),
+    ("Có freeship không", 1),
+    ("Màn hình mờ", 0),
+    ("Đặt hàng như thế nào", 1),
+    ("Review chi tiết", 1)
+]
+
+# Tạo DataFrame
+df = spark.createDataFrame(training_data, ["comment", "label"])
+
+# Feature Engineering Pipeline
+tokenizer = Tokenizer(inputCol="comment", outputCol="words")
+stop_words_remover = StopWordsRemover(
+    inputCol="words", 
+    outputCol="filtered_words",
+    stopWords=["không", "có", "gì", "nào", "được", "và", "của", "cho"]
+)
+count_vectorizer = CountVectorizer(
+    inputCol="filtered_words", 
+    outputCol="raw_features",
+    vocabSize=1000
+)
+idf = IDF(inputCol="raw_features", outputCol="features")
+
+pipeline = Pipeline(stages=[tokenizer, stop_words_remover, count_vectorizer, idf])
+model = pipeline.fit(df)
+processed_df = model.transform(df)
+
+# Lưu pipeline và data
+model.write().overwrite().save("models/preprocessing_pipeline")
+processed_df.write.mode("overwrite").parquet("data/training_data.parquet")
+
+print("✅ Đã chuẩn bị training data!")
+processed_df.select("comment", "label", "features").show(5, truncate=False)
+```
+
+### Bước 3.2: Train và So sánh 2 Models
+
+Tạo file `train_and_compare_models.py`:
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.ml.classification import LogisticRegression, NaiveBayes
+from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClassificationEvaluator
+from pyspark.ml import PipelineModel
+
+spark = SparkSession.builder \
+    .appName("ModelComparison") \
+    .master("local[*]") \
+    .getOrCreate()
+
+# Load preprocessed data
+processed_df = spark.read.parquet("data/training_data.parquet")
+
+# Split train/test
+train_df, test_df = processed_df.randomSplit([0.8, 0.2], seed=42)
+
+print("=" * 60)
+print("TRAINING MODELS")
+print("=" * 60)
+
+# Model 1: Logistic Regression
+print("\n1. Training Logistic Regression...")
+lr = LogisticRegression(featuresCol="features", labelCol="label", maxIter=10)
+lr_model = lr.fit(train_df)
+lr_predictions = lr_model.transform(test_df)
+
+# Model 2: Naive Bayes
+print("2. Training Naive Bayes...")
+nb = NaiveBayes(featuresCol="features", labelCol="label")
+nb_model = nb.fit(train_df)
+nb_predictions = nb_model.transform(test_df)
+
+# Đánh giá Models
+evaluator_acc = MulticlassClassificationEvaluator(
+    labelCol="label", 
+    predictionCol="prediction", 
+    metricName="accuracy"
+)
+
+evaluator_auc = BinaryClassificationEvaluator(
+    labelCol="label",
+    rawPredictionCol="rawPrediction",
+    metricName="areaUnderROC"
+)
+
+# Kết quả Logistic Regression
+lr_accuracy = evaluator_acc.evaluate(lr_predictions)
+lr_auc = evaluator_auc.evaluate(lr_predictions)
+
+# Kết quả Naive Bayes
+nb_accuracy = evaluator_acc.evaluate(nb_predictions)
+nb_auc = evaluator_auc.evaluate(nb_predictions)
+
+print("\n" + "=" * 60)
+print("MODEL COMPARISON RESULTS")
+print("=" * 60)
+print(f"\nLogistic Regression:")
+print(f"  - Accuracy: {lr_accuracy:.4f}")
+print(f"  - AUC-ROC: {lr_auc:.4f}")
+
+print(f"\nNaive Bayes:")
+print(f"  - Accuracy: {nb_accuracy:.4f}")
+print(f"  - AUC-ROC: {nb_auc:.4f}")
+
+# Chọn model tốt hơn
+if lr_accuracy >= nb_accuracy:
+    best_model = lr_model
+    best_model_name = "LogisticRegression"
+    print(f"\n✅ Model tốt nhất: Logistic Regression (Accuracy: {lr_accuracy:.4f})")
+else:
+    best_model = nb_model
+    best_model_name = "NaiveBayes"
+    print(f"\n✅ Model tốt nhất: Naive Bayes (Accuracy: {nb_accuracy:.4f})")
+
+# Lưu model tốt nhất
+best_model.write().overwrite().save(f"models/{best_model_name}_model")
+print(f"\n💾 Đã lưu model: models/{best_model_name}_model")
+
+# Test predictions
+print("\n" + "=" * 60)
+print("SAMPLE PREDICTIONS")
+print("=" * 60)
+test_df.select("comment", "label").show(5)
+lr_predictions.select("comment", "label", "prediction", "probability").show(5, truncate=False)
+```
+
+### Bước 3.3: Tích hợp Model vào Spark Streaming
+
+Tạo file `spark_streaming_with_ml.py`:
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.ml import PipelineModel
+from pyspark.ml.classification import LogisticRegressionModel
+import json
+
+# Khởi tạo Spark Session
+spark = SparkSession.builder \
+    .appName("LivestreamSentimentAnalysis") \
+    .master("spark://localhost:7077") \
+    .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0") \
+    .getOrCreate()
+
+spark.sparkContext.setLogLevel("WARN")
+
+# Load preprocessing pipeline và model
+preprocessing_pipeline = PipelineModel.load("models/preprocessing_pipeline")
+sentiment_model = LogisticRegressionModel.load("models/LogisticRegression_model")
+
+# Schema cho comment
+comment_schema = StructType([
+    StructField("comment_id", StringType(), True),
+    StructField("content", StringType(), True),
+    StructField("topic", StringType(), True),
+    StructField("timestamp", StringType(), True),
+    StructField("user_id", StringType(), True)
+])
+
+# Đọc stream từ Kafka
+kafka_stream = spark \
+    .readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "livestream-comments") \
+    .option("startingOffsets", "latest") \
+    .load()
+
+# Parse JSON
+parsed_stream = kafka_stream.select(
+    from_json(col("value").cast("string"), comment_schema).alias("data"),
+    col("timestamp").alias("kafka_timestamp")
+).select("data.*", "kafka_timestamp")
+
+def process_with_sentiment(df, epoch_id):
+    """
+    Xử lý stream với sentiment analysis và window operations
+    """
+    # Làm sạch dữ liệu
+    cleaned_df = df.filter(
+        (col("content").isNotNull()) & 
+        (length(col("content")) > 2)
+    )
+    
+    if cleaned_df.count() == 0:
+        return
+    
+    # Áp dụng preprocessing pipeline
+    preprocessed_df = preprocessing_pipeline.transform(cleaned_df)
+    
+    # Dự đoán sentiment
+    predictions_df = sentiment_model.transform(preprocessed_df)
+    
+    # Chuyển đổi prediction (0/1) thành sentiment label
+    sentiment_df = predictions_df.withColumn(
+        "sentiment",
+        when(col("prediction") == 1.0, "positive")
+        .otherwise("negative")
+    ).withColumn(
+        "sentiment_score",
+        col("probability")[1] - col("probability")[0]  # positive - negative
+    )
+    
+    # Window Operations: Tính sentiment trong 30 giây gần nhất
+    windowed_df = sentiment_df \
+        .withWatermark("kafka_timestamp", "30 seconds") \
+        .groupBy(
+            window(col("kafka_timestamp"), "30 seconds", "10 seconds"),
+            col("topic")
+        ) \
+        .agg(
+            count("*").alias("comment_count"),
+            avg("sentiment_score").alias("avg_sentiment"),
+            sum(when(col("sentiment") == "positive", 1).otherwise(0)).alias("positive_count"),
+            sum(when(col("sentiment") == "negative", 1).otherwise(0)).alias("negative_count")
+        )
+    
+    # Top Comments: Đếm tần suất comment
+    top_comments_df = sentiment_df \
+        .withWatermark("kafka_timestamp", "1 minute") \
+        .groupBy(
+            window(col("kafka_timestamp"), "1 minute", "10 seconds"),
+            col("content")
+        ) \
+        .agg(count("*").alias("frequency")) \
+        .orderBy(desc("frequency")) \
+        .limit(5)
+    
+    # Top Negative Comments
+    top_negative_df = sentiment_df \
+        .filter(col("sentiment") == "negative") \
+        .withWatermark("kafka_timestamp", "1 minute") \
+        .groupBy(
+            window(col("kafka_timestamp"), "1 minute", "10 seconds"),
+            col("content")
+        ) \
+        .agg(count("*").alias("frequency")) \
+        .orderBy(desc("frequency")) \
+        .limit(5)
+    
+    # Keywords: Word Count
+    words_df = sentiment_df.select(
+        explode(split(col("content"), " ")).alias("word"),
+        col("kafka_timestamp")
+    ).filter(
+        (length(col("word")) > 2) &
+        (col("word").rlike("^[a-zA-ZÀ-ỹ0-9]+$"))
+    )
+    
+    top_keywords_df = words_df \
+        .withWatermark("kafka_timestamp", "1 minute") \
+        .groupBy(
+            window(col("kafka_timestamp"), "1 minute", "10 seconds"),
+            col("word")
+        ) \
+        .agg(count("*").alias("frequency")) \
+        .orderBy(desc("frequency")) \
+        .limit(10)
+    
+    # Hiển thị kết quả
+    print(f"\n{'='*60}")
+    print(f"BATCH {epoch_id} - SENTIMENT ANALYSIS RESULTS")
+    print(f"{'='*60}")
+    
+    print("\n📊 Sentiment trong 30 giây gần nhất:")
+    windowed_df.select("window", "topic", "comment_count", "avg_sentiment", 
+                      "positive_count", "negative_count").show(truncate=False)
+    
+    print("\n🔥 Top Comments:")
+    top_comments_df.select("window", "content", "frequency").show(truncate=False)
+    
+    print("\n⚠️  Top Negative Comments:")
+    top_negative_df.select("window", "content", "frequency").show(truncate=False)
+    
+    print("\n🔑 Top Keywords:")
+    top_keywords_df.select("window", "word", "frequency").show(truncate=False)
+    
+    # Lưu vào memory table để Dashboard đọc
+    sentiment_df.select("comment_id", "content", "sentiment", "sentiment_score", 
+                       "topic", "kafka_timestamp") \
+        .write \
+        .format("memory") \
+        .option("table", "sentiment_results") \
+        .mode("append") \
+        .save()
+
+# Chạy stream processing
+query = parsed_stream.writeStream \
+    .foreachBatch(process_with_sentiment) \
+    .outputMode("update") \
+    .trigger(processingTime='10 seconds') \
+    .start()
+
+query.awaitTermination()
+```
+
+### Bước 3.4: Chạy các scripts
+
+```bash
+# Terminal 1: Chuẩn bị training data
+python prepare_training_data.py
+
+# Terminal 2: Train và so sánh models
+python train_and_compare_models.py
+
+# Terminal 3: Chạy Producer
+python producer.py
+
+# Terminal 4: Chạy Spark Streaming với ML
+python spark_streaming_with_ml.py
+```
+
+### ✅ Deliverable Giai đoạn 3:
+- ✅ Báo cáo so sánh Logistic Regression vs Naive Bayes
+- ✅ Model tốt nhất đã được lưu và sử dụng
+- ✅ Sentiment analysis realtime trên DStream
+- ✅ Window Operations tính xu hướng 30 giây
+- ✅ Top Comments, Top Negative, Top Keywords được tính toán
+
+---
+
+## 💾 GIAI ĐOẠN 4: FAULT TOLERANCE & STORAGE
+
+### Mục tiêu:
+- Cấu hình Checkpointing để phục hồi khi lỗi
+- Lưu trữ kết quả vào Database
+- Đảm bảo hệ thống resilient
+
+### Bước 4.1: Cấu hình Checkpointing
+
+Tạo file `spark_streaming_checkpoint.py`:
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pyspark.ml import PipelineModel
+from pyspark.ml.classification import LogisticRegressionModel
+
+# Khởi tạo Spark Session với checkpoint directory
+spark = SparkSession.builder \
+    .appName("LivestreamSentimentAnalysis") \
+    .master("spark://localhost:7077") \
+    .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0") \
+    .config("spark.sql.streaming.checkpointLocation", "hdfs://namenode:9000/checkpoints/livestream") \
+    .getOrCreate()
+
+spark.sparkContext.setLogLevel("WARN")
+
+# Checkpoint directory trên HDFS
+checkpoint_location = "hdfs://namenode:9000/checkpoints/livestream"
+
+# Load models
+preprocessing_pipeline = PipelineModel.load("models/preprocessing_pipeline")
+sentiment_model = LogisticRegressionModel.load("models/LogisticRegression_model")
+
+# Schema
+comment_schema = StructType([
+    StructField("comment_id", StringType(), True),
+    StructField("content", StringType(), True),
+    StructField("topic", StringType(), True),
+    StructField("timestamp", StringType(), True),
+    StructField("user_id", StringType(), True)
+])
+
+# Đọc stream từ Kafka
+kafka_stream = spark \
+    .readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "livestream-comments") \
+    .option("startingOffsets", "latest") \
+    .load()
+
+parsed_stream = kafka_stream.select(
+    from_json(col("value").cast("string"), comment_schema).alias("data"),
+    col("timestamp").alias("kafka_timestamp")
+).select("data.*", "kafka_timestamp")
+
+def process_and_save(df, epoch_id):
+    """Xử lý và lưu kết quả"""
+    # ... (code xử lý giống như bước 3.3)
+    
+    # Lưu vào HDFS (Parquet format)
+    sentiment_df.write \
+        .mode("append") \
+        .parquet("hdfs://namenode:9000/results/sentiment")
+
+# Stream với checkpointing
+query = parsed_stream.writeStream \
+    .foreachBatch(process_and_save) \
+    .outputMode("update") \
+    .option("checkpointLocation", checkpoint_location) \
+    .trigger(processingTime='10 seconds') \
+    .start()
+
+query.awaitTermination()
+```
+
+### Bước 4.2: Lưu trữ vào MongoDB
+
+Cài đặt MongoDB connector:
+
+```bash
+pip install pymongo
+```
+
+Tạo file `save_to_mongodb.py`:
+
+```python
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import *
+from pyspark.sql.types import *
+from pymongo import MongoClient
+import json
+
+# Kết nối MongoDB
+mongo_client = MongoClient('mongodb://localhost:27017/')
+db = mongo_client['livestream_analysis']
+collection = db['sentiment_results']
+
+def save_to_mongodb(df, epoch_id):
+    """Lưu kết quả vào MongoDB"""
+    # Convert Spark DataFrame to Pandas
+    pandas_df = df.toPandas()
+    
+    # Insert vào MongoDB
+    records = pandas_df.to_dict('records')
+    if records:
+        collection.insert_many(records)
+        print(f"✅ Đã lưu {len(records)} records vào MongoDB")
+
+# Sử dụng trong foreachBatch
+query = parsed_stream.writeStream \
+    .foreachBatch(save_to_mongodb) \
+    .outputMode("update") \
+    .start()
+```
+
+### Bước 4.3: Lưu trữ vào MySQL
+
+Tạo file `save_to_mysql.py`:
+
+```python
+from pyspark.sql import SparkSession
+
+# Lưu vào MySQL
+def save_to_mysql(df, epoch_id):
+    """Lưu kết quả vào MySQL"""
+    df.write \
+        .format("jdbc") \
+        .option("url", "jdbc:mysql://localhost:3306/livestream_db") \
+        .option("dbtable", "sentiment_results") \
+        .option("user", "root") \
+        .option("password", "password") \
+        .mode("append") \
+        .save()
+    
+    print(f"✅ Đã lưu batch {epoch_id} vào MySQL")
+```
+
+### ✅ Deliverable Giai đoạn 4:
+- ✅ Checkpointing được cấu hình trên HDFS
+- ✅ Hệ thống có thể tự phục hồi khi Driver crash
+- ✅ Kết quả được lưu vào Database (MongoDB/MySQL)
+- ✅ Dữ liệu lịch sử được lưu trên HDFS
+
+---
+
+## 📊 DASHBOARD VISUALIZATION
+
+### Mục tiêu:
+- Xây dựng Dashboard realtime với Streamlit
+- Hiển thị Sentiment Gauge, Top Comments, Top Keywords
+
+### Bước 5.1: Cài đặt Streamlit
+
+```bash
+pip install streamlit pandas matplotlib seaborn plotly
+```
+
+### Bước 5.2: Tạo Dashboard
+
+Tạo file `dashboard.py`:
+
+```python
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from pymongo import MongoClient
+import time
+from datetime import datetime, timedelta
+
+# Kết nối MongoDB
+mongo_client = MongoClient('mongodb://localhost:27017/')
+db = mongo_client['livestream_analysis']
+collection = db['sentiment_results']
+
+st.set_page_config(page_title="Livestream Analytics Dashboard", layout="wide")
+
+st.title("📊 Livestream Realtime Analytics Dashboard")
+
+# Sidebar
+st.sidebar.header("⚙️ Cài đặt")
+refresh_interval = st.sidebar.slider("Refresh Interval (seconds)", 5, 60, 10)
+auto_refresh = st.sidebar.checkbox("Auto Refresh", value=True)
+
+# Placeholder cho dữ liệu
+placeholder = st.empty()
+
+def get_latest_data():
+    """Lấy dữ liệu mới nhất từ MongoDB"""
+    # Lấy dữ liệu trong 1 phút gần nhất
+    one_minute_ago = datetime.now() - timedelta(minutes=1)
+    
+    cursor = collection.find({
+        "kafka_timestamp": {"$gte": one_minute_ago.isoformat()}
+    })
+    
+    df = pd.DataFrame(list(cursor))
+    return df
+
+def calculate_metrics(df):
+    """Tính toán các metrics"""
+    if df.empty:
+        return {
+            "avg_sentiment": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "total_comments": 0,
+            "top_comments": pd.DataFrame(),
+            "top_keywords": pd.DataFrame()
+        }
+    
+    avg_sentiment = df['sentiment_score'].mean() if 'sentiment_score' in df.columns else 0
+    positive_count = len(df[df['sentiment'] == 'positive']) if 'sentiment' in df.columns else 0
+    negative_count = len(df[df['sentiment'] == 'negative']) if 'sentiment' in df.columns else 0
+    total_comments = len(df)
+    
+    # Top Comments
+    top_comments = df.groupby('content').size().reset_index(name='frequency')
+    top_comments = top_comments.sort_values('frequency', ascending=False).head(5)
+    
+    # Top Keywords (tách từ)
+    if 'content' in df.columns:
+        words = df['content'].str.split().explode()
+        top_keywords = words.value_counts().head(10).reset_index()
+        top_keywords.columns = ['keyword', 'frequency']
+    else:
+        top_keywords = pd.DataFrame()
+    
+    return {
+        "avg_sentiment": avg_sentiment,
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "total_comments": total_comments,
+        "top_comments": top_comments,
+        "top_keywords": top_keywords
+    }
+
+def create_sentiment_gauge(score):
+    """Tạo Sentiment Gauge"""
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number+delta",
+        value = score,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': "Sentiment Score"},
+        delta = {'reference': 0},
+        gauge = {
+            'axis': {'range': [-1, 1]},
+            'bar': {'color': "darkblue"},
+            'steps': [
+                {'range': [-1, -0.5], 'color': "lightgray"},
+                {'range': [-0.5, 0], 'color': "gray"},
+                {'range': [0, 0.5], 'color': "lightgreen"},
+                {'range': [0.5, 1], 'color': "green"}
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 0
+            }
+        }
+    ))
+    fig.update_layout(height=300)
+    return fig
+
+while True:
+    with placeholder.container():
+        # Lấy dữ liệu
+        df = get_latest_data()
+        metrics = calculate_metrics(df)
+        
+        # Row 1: Sentiment Gauge và Stats
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Comments", metrics["total_comments"])
+        
+        with col2:
+            st.metric("Positive", metrics["positive_count"], delta=f"{metrics['positive_count']}")
+        
+        with col3:
+            st.metric("Negative", metrics["negative_count"], delta=f"-{metrics['negative_count']}")
+        
+        with col4:
+            st.metric("Avg Sentiment", f"{metrics['avg_sentiment']:.2f}")
+        
+        # Row 2: Sentiment Gauge
+        st.subheader("🎯 Sentiment Gauge (Last 1 Minute)")
+        gauge_fig = create_sentiment_gauge(metrics['avg_sentiment'])
+        st.plotly_chart(gauge_fig, use_container_width=True)
+        
+        # Row 3: Top Comments và Top Keywords
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("🔥 Top Comments")
+            if not metrics['top_comments'].empty:
+                fig_comments = px.bar(
+                    metrics['top_comments'],
+                    x='frequency',
+                    y='content',
+                    orientation='h',
+                    labels={'frequency': 'Frequency', 'content': 'Comment'}
+                )
+                st.plotly_chart(fig_comments, use_container_width=True)
+            else:
+                st.info("Chưa có dữ liệu")
+        
+        with col2:
+            st.subheader("🔑 Top Keywords")
+            if not metrics['top_keywords'].empty:
+                fig_keywords = px.bar(
+                    metrics['top_keywords'],
+                    x='frequency',
+                    y='keyword',
+                    orientation='h',
+                    labels={'frequency': 'Frequency', 'keyword': 'Keyword'}
+                )
+                st.plotly_chart(fig_keywords, use_container_width=True)
+            else:
+                st.info("Chưa có dữ liệu")
+        
+        # Row 4: Top Negative Comments
+        st.subheader("⚠️ Top Negative Comments")
+        negative_df = df[df['sentiment'] == 'negative'] if 'sentiment' in df.columns else pd.DataFrame()
+        if not negative_df.empty:
+            negative_comments = negative_df.groupby('content').size().reset_index(name='frequency')
+            negative_comments = negative_comments.sort_values('frequency', ascending=False).head(5)
+            st.dataframe(negative_comments, use_container_width=True)
+        else:
+            st.info("Chưa có comment tiêu cực")
+        
+        # Refresh
+        if auto_refresh:
+            time.sleep(refresh_interval)
+            st.rerun()
+        else:
+            break
+```
+
+### Bước 5.3: Chạy Dashboard
+
+```bash
+streamlit run dashboard.py
+```
+
+Dashboard sẽ mở tại: http://localhost:8501
+
+### ✅ Deliverable Dashboard:
+- ✅ Sentiment Gauge hiển thị cảm xúc realtime
+- ✅ Top Comments bar chart
+- ✅ Top Keywords visualization
+- ✅ Top Negative Comments table
+- ✅ Auto-refresh mỗi 10 giây
+
+---
+
+## 🧪 TESTING & VALIDATION
+
+### Kiểm tra từng giai đoạn:
+
+#### Test Giai đoạn 1:
+```bash
+# Kiểm tra Kafka topic
+docker exec -it big_data_kafka_1 kafka-console-consumer \
+  --topic livestream-comments \
+  --from-beginning \
+  --bootstrap-server localhost:9092
+
+# Kiểm tra HDFS
+docker exec -it namenode hdfs dfs -ls /
+```
+
+#### Test Giai đoạn 2:
+- Xem Spark UI: http://localhost:8080
+- Kiểm tra logs trong console
+
+#### Test Giai đoạn 3:
+- Kiểm tra model accuracy trong báo cáo
+- Xem predictions trong console output
+
+#### Test Giai đoạn 4:
+- Simulate crash: Dừng Spark Streaming và restart
+- Kiểm tra checkpoint recovery
+- Kiểm tra data trong MongoDB/MySQL
+
+### Troubleshooting:
+
+**Lỗi Kafka connection:**
+```bash
+# Kiểm tra Kafka đang chạy
+docker ps | grep kafka
+
+# Kiểm tra port
+netstat -an | findstr 9092
+```
+
+**Lỗi Spark connection:**
+```bash
+# Kiểm tra Spark Master
+curl http://localhost:8080
+
+# Xem logs
+docker logs spark-master
+```
+
+**Lỗi HDFS:**
+```bash
+# Kiểm tra NameNode
+docker exec -it namenode hdfs dfsadmin -report
+```
+
+---
+
+## 📝 TỔNG KẾT
+
+Sau khi hoàn thành tất cả các giai đoạn, bạn sẽ có:
+
+✅ **Hệ thống Big Data hoàn chỉnh:**
+- Hadoop (HDFS/YARN) cluster
+- Spark Streaming xử lý realtime
+- Kafka message queue
+- MLlib sentiment analysis
+- Dashboard visualization
+
+✅ **Kết quả Dashboard:**
+- Sentiment Gauge (đồng hồ cảm xúc)
+- Top Comments (comments phổ biến)
+- Top Negative (cảnh báo)
+- Top Keywords (từ khóa hot)
+
+✅ **Fault Tolerance:**
+- Checkpointing trên HDFS
+- Tự động phục hồi khi lỗi
+
+✅ **Báo cáo Model Comparison:**
+- So sánh Logistic Regression vs Naive Bayes
+- Chọn model tốt nhất
+
+---
+
+## 📚 TÀI LIỆU THAM KHẢO
+
+- Spark Streaming Documentation: https://spark.apache.org/docs/latest/streaming-programming-guide.html
+- Kafka Documentation: https://kafka.apache.org/documentation/
+- MLlib Guide: https://spark.apache.org/docs/latest/ml-guide.html
+- Streamlit Documentation: https://docs.streamlit.io/
+
+---
+
+**Chúc bạn thành công với dự án! 🚀**
+
